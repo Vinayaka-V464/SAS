@@ -1,0 +1,17 @@
+{
+  "name": "school-sas-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w frontend-next",
+    "dev": "npm run dev -w frontend-next",
+    "start": "npm run start -w frontend-next",
+    "lint": "echo 'add lints in packages/shared-config' && exit 0",
+    "test": "echo 'no tests yet' && exit 0"
+  }
+}
