@@ -11,21 +11,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      # Removed pnpm setup step since we are using npm
 
       - uses: actions/setup-node@v4
         with:
           node-version: 18
-          cache: 'npm' # Switched to npm cache
+          cache: 'npm'
       
       - name: Install deps
-        # 'npm ci' is faster and more reliable for CI than 'npm install'
-        # It requires a package-lock.json file to be present
         run: npm ci
 
-      - name: Type check and build services
-        # NOTE: npm does not have the exact same '--filter' flag as pnpm.
-        # This command runs the 'build' script in all configured workspaces (packages).
-        # If a package doesn't have a build script, '--if-present' ensures it doesn't fail.
+      - name: Build Shared Lib First
+        # We explicitly build the shared library first so other services can find it
+        run: npm run build -w @school-sas/shared-lib
+
+      - name: Type check and build all services
+        # Now we build everything else. The --if-present flag prevents failure if a package lacks a build script.
         run: npm run build --workspaces --if-present
