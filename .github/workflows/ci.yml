@@ -11,16 +11,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      
+      # Removed pnpm setup step since we are using npm
+
       - uses: actions/setup-node@v4
         with:
           node-version: 18
-          cache: 'pnpm'
+          cache: 'npm' # Switched to npm cache
+      
       - name: Install deps
-        run: pnpm install --frozen-lockfile
-      - name: Type check and build services
-        run: |
-          pnpm -r --filter ./services/... run build
+        # 'npm ci' is faster and more reliable for CI than 'npm install'
+        # It requires a package-lock.json file to be present
+        run: npm ci
 
+      - name: Type check and build services
+        # NOTE: npm does not have the exact same '--filter' flag as pnpm.
+        # This command runs the 'build' script in all configured workspaces (packages).
+        # If a package doesn't have a build script, '--if-present' ensures it doesn't fail.
+        run: npm run build --workspaces --if-present
