@@ -4,27 +4,43 @@ import { getClasses, getSectionsForClass, addCircular, AttachmentLink, Attachmen
 
 export default function TeacherCirculars() {
   const [teacher, setTeacher] = React.useState<{ name: string; subject: string } | null>(null)
-  const [klass, setKlass] = React.useState<string>('')
-  const [section, setSection] = React.useState<string>('')
+  const [klass, setKlass] = React.useState<string>(() => getClasses()[0] || '')
+  const [section, setSection] = React.useState<string>(() => {
+    const all = getClasses()
+    const first = all[0] || ''
+    const secs = getSectionsForClass(first)
+    return secs[0] || ''
+  })
+  const [classOptions, setClassOptions] = React.useState<string[]>(() => getClasses())
+  const [sectionOptions, setSectionOptions] = React.useState<string[]>(() =>
+    getSectionsForClass(getClasses()[0] || ''),
+  )
   React.useEffect(() => {
-    setSection(prev => {
-      const arr = getSectionsForClass(klass)
-      return arr.includes(prev) ? prev : (arr[0] || '')
-    })
-  }, [klass])
+    const baseSections =
+      teacher != null
+        ? (() => {
+            const assigned = getAssignedSectionsForTeacher(teacher.name, klass)
+            return assigned.length ? assigned : getSectionsForClass(klass)
+          })()
+        : getSectionsForClass(klass)
+    setSectionOptions(baseSections)
+    setSection(prev => (baseSections.includes(prev) ? prev : baseSections[0] || ''))
+  }, [klass, teacher])
   React.useEffect(() => {
     try {
       const raw = sessionStorage.getItem('teacher')
       if (!raw) return
       const t = JSON.parse(raw)
+      setTeacher(t)
       const classes = getAssignedClassesForTeacher(t.name)
-      if (classes.length) {
-        setKlass(classes[0])
-        const secs = getAssignedSectionsForTeacher(t.name, classes[0])
-        setSection(secs[0] || getSectionsForClass(classes[0])[0] || '')
-      } else {
-        const all = getClasses(); setKlass(all[0] || ''); setSection(getSectionsForClass(all[0] || '')[0] || '')
-      }
+      const baseClasses = classes.length ? classes : getClasses()
+      setClassOptions(baseClasses)
+      const firstClass = baseClasses[0] || ''
+      setKlass(firstClass)
+      const secs = getAssignedSectionsForTeacher(t.name, firstClass)
+      const baseSections = secs.length ? secs : getSectionsForClass(firstClass)
+      setSectionOptions(baseSections)
+      setSection(baseSections[0] || '')
     } catch {}
   }, [])
   const [date, setDate] = React.useState<string>(() => new Date().toISOString().slice(0,10))
@@ -33,13 +49,6 @@ export default function TeacherCirculars() {
   const [linkInput, setLinkInput] = React.useState('')
   const [attachments, setAttachments] = React.useState<Array<AttachmentLink | AttachmentFile>>([])
   const [message, setMessage] = React.useState('')
-
-  React.useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem('teacher')
-      if (raw) setTeacher(JSON.parse(raw))
-    } catch {}
-  }, [])
 
   const addLink = () => {
     try {
@@ -54,10 +63,8 @@ export default function TeacherCirculars() {
 
   const addFiles = async (files?: FileList | null) => {
     if (!files) return
-    const maxBytes = 1024 * 1024 // 1MB per file
     const items: AttachmentFile[] = []
     for (const f of Array.from(files)) {
-      if (f.size > maxBytes) { setMessage(`Skipped ${f.name} (>1MB)`); continue }
       const dataUrl = await new Promise<string>((res, rej) => {
         const r = new FileReader(); r.onerror = () => rej(''); r.onload = () => res(String(r.result)); r.readAsDataURL(f)
       })
@@ -85,10 +92,10 @@ export default function TeacherCirculars() {
       <div style={{display:'grid', gap:12, marginTop:12}}>
         <div className="row">
           <select className="input select" value={klass} onChange={e=>setKlass(e.target.value)}>
-            {(typeof window !== 'undefined' ? (() => { try { const raw = sessionStorage.getItem('teacher'); if (raw) { const t = JSON.parse(raw); const arr = getAssignedClassesForTeacher(t.name); return (arr.length ? arr : getClasses()) } } catch {} return getClasses() })() : getClasses()).map(c=> <option key={c}>{c}</option>)}
+            {classOptions.map(c=> <option key={c}>{c}</option>)}
           </select>
           <select className="input select" value={section} onChange={e=>setSection(e.target.value)}>
-            {(typeof window !== 'undefined' ? (() => { try { const raw = sessionStorage.getItem('teacher'); if (raw) { const t = JSON.parse(raw); const arr = getAssignedSectionsForTeacher(t.name, klass); return (arr.length ? arr : getSectionsForClass(klass)) } } catch {} return getSectionsForClass(klass) })() : getSectionsForClass(klass)).map(s=> <option key={s}>{s}</option>)}
+            {sectionOptions.map(s=> <option key={s}>{s}</option>)}
           </select>
           <input className="input" type="date" value={date} onChange={e=>setDate(e.target.value)} />
         </div>

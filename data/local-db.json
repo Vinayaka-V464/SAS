@@ -1,0 +1,28 @@
+{
+  "parents": [],
+  "applications": [],
+  "fees": [],
+  "profiles": {
+    "parents": [],
+    "students": []
+  },
+  "adhocFees": [],
+  "attendance": {},
+  "marks": [],
+  "diary": {},
+  "circulars": [],
+  "calendar": {},
+  "meta": {
+    "version": 2,
+    "updatedAt": "2025-11-26T15:26:55.822Z"
+  },
+  "adhocBills": [],
+  "academics": {
+    "subjects": [],
+    "classSubjects": {},
+    "syllabus": {},
+    "textbooks": {},
+    "materials": {},
+    "pyqs": {}
+  }
+}

@@ -1,6 +1,57 @@
 "use client"
 import React from 'react'
-import { getClasses, getSectionsForClass, getAssignedClassesForTeacher, getAssignedSectionsForTeacher, getAssignedSubjectsForTeacher, getClassSubjects, readSyllabus, saveSyllabus, setTextbook, addMaterial, listMaterials, addPyq, listPyqs, listTextbooks, removeTextbook, removeMaterial, removePyq, type SyllabusChapter, type AttachmentFile, type AttachmentLink, type TextbookEntry } from '../data'
+import { getClasses, getSectionsForClass, getAssignedClassesForTeacher, getAssignedSectionsForTeacher, getAssignedSubjectsForTeacher, getClassSubjects, readSyllabus, saveSyllabus, setTextbook, addMaterial, listMaterials, listTextbooks, removeTextbook, removeMaterial, type SyllabusChapter, type AttachmentFile, type AttachmentLink, type TextbookEntry } from '../data'
+
+function parseChaptersFromIndex(text: string): SyllabusChapter[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map(l => l.replace(/\s+/g, ' ').trim())
+    .filter(l => l.length > 0)
+
+  const chapters: SyllabusChapter[] = []
+  const seen = new Set<string>()
+
+  const chapterPatterns = [
+    /^(chapter|unit)\s+\d+[\s:.\-]+(.+)/i,
+    /^(\d{1,2}\s*[\.\-–]\s+)(.+)/,
+    /^(\d{1,2}\s+[A-Za-z].+)/,
+  ]
+
+  for (const raw of lines) {
+    const line = raw.replace(/\.+\s*\d+\s*$/, '').trim()
+    if (!line) continue
+    let title: string | null = null
+
+    for (const pat of chapterPatterns) {
+      const m = line.match(pat)
+      if (m) {
+        if (m[2]) {
+          title = `${line}`.trim()
+        } else {
+          title = line.trim()
+        }
+        break
+      }
+    }
+
+    if (!title) continue
+    const key = title.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    chapters.push({ id: `${chapters.length + 1}`, title, subtopics: [] })
+  }
+
+  if (chapters.length === 0) {
+    const fallback = lines.filter(l => /^[A-Z0-9].{8,}$/.test(l)).slice(0, 10)
+    return fallback.map((l, idx) => ({
+      id: `${idx + 1}`,
+      title: l,
+      subtopics: [],
+    }))
+  }
+
+  return chapters
+}
 
 export default function TeacherAcademicContent() {
   const [teacher, setTeacher] = React.useState<{ name: string; subject: string } | null>(null)
@@ -37,63 +88,26 @@ export default function TeacherAcademicContent() {
   const [chapters, setChapters] = React.useState<SyllabusChapter[]>([])
   const [message, setMessage] = React.useState('')
   const [materials, setMaterials] = React.useState<Array<AttachmentLink | AttachmentFile>>([])
-  const [pyqs, setPyqs] = React.useState<Array<AttachmentLink | AttachmentFile>>([])
   const [books, setBooks] = React.useState<TextbookEntry[]>([])
   const [linkInput, setLinkInput] = React.useState('')
-  const [pyqLinkInput, setPyqLinkInput] = React.useState('')
+  const [pendingSylFile, setPendingSylFile] = React.useState<File | null>(null)
+  const [pendingSylName, setPendingSylName] = React.useState<string>('')
   const [pendingTB, setPendingTB] = React.useState<File | null>(null)
   const [pendingChapterTB, setPendingChapterTB] = React.useState<File | null>(null)
   const [pendingTBName, setPendingTBName] = React.useState<string>('')
   const [pendingCTBName, setPendingCTBName] = React.useState<string>('')
   const [selChapter, setSelChapter] = React.useState<string>('')
   const [pendingMatFiles, setPendingMatFiles] = React.useState<File[]>([])
-  const [pendingPyqFiles, setPendingPyqFiles] = React.useState<File[]>([])
   const [viewer, setViewer] = React.useState<{ url: string; name: string } | null>(null)
 
   const loadAll = React.useCallback(() => {
     if (!klass || !section || !subject) return
     try { const syl = readSyllabus(klass, section, subject); setChapters(syl.chapters || []) } catch { setChapters([]) }
     try { setMaterials(listMaterials(klass, section, subject)) } catch { setMaterials([]) }
-    try { setPyqs(listPyqs(klass, section, subject)) } catch { setPyqs([]) }
     try { setBooks(listTextbooks(klass, section, subject)) } catch { setBooks([]) }
   }, [klass, section, subject])
 
   React.useEffect(() => { loadAll() }, [loadAll])
-
-  const [newChapterTitle, setNewChapterTitle] = React.useState('')
-  const addChapter = () => {
-    const title = newChapterTitle.trim(); if (!title) return
-    const ch: SyllabusChapter = { id: String(Date.now()), title, subtopics: [] }
-    setChapters(prev => [...prev, ch]); setNewChapterTitle('')
-  }
-  const [subDraft, setSubDraft] = React.useState<Record<string, { title: string; details: string }>>({})
-  const addSubtopic = (chId: string) => {
-    const d = subDraft[chId] || { title: '', details: '' }
-    const title = d.title.trim(); if (!title) return
-    setChapters(prev => prev.map(c => c.id === chId ? { ...c, subtopics: [...c.subtopics, { id: String(Date.now()), title, details: d.details.trim() }] } : c))
-    setSubDraft(prev => ({ ...prev, [chId]: { title: '', details: '' } }))
-  }
-  const onDeleteSubtopic = (chId: string, subId: string) => {
-    setChapters(prev => prev.map(c => c.id === chId ? { ...c, subtopics: c.subtopics.filter(s => s.id !== subId) } : c))
-  }
-  const onDeleteChapter = (chId: string) => {
-    if (!confirm('Delete this chapter and its subtopics?')) return
-    setChapters(prev => prev.filter(c => c.id !== chId))
-  }
-  const onSaveSyllabus = () => {
-    if (!klass || !section || !subject) return
-    saveSyllabus({ klass, section, subject, chapters })
-    setMessage('Syllabus saved.'); setTimeout(()=>setMessage(''), 1500)
-  }
-
-  const addFiles = async (files: FileList | null, dest: 'materials' | 'pyqs' | 'textbook') => {
-    if (!files || files.length === 0) return
-    for (const f of Array.from(files)) {
-      if (dest === 'materials') setPendingMatFiles(prev => [...prev, f])
-      else if (dest === 'pyqs') setPendingPyqFiles(prev => [...prev, f])
-    }
-    if (dest !== 'textbook') { setMessage('Files staged. Click Publish.'); setTimeout(()=>setMessage(''), 1000) }
-  }
 
   const publishTextbook = async (chapterId: string | null) => {
     try {
@@ -101,19 +115,17 @@ export default function TeacherAcademicContent() {
       if (!f) { setMessage('Choose a file first'); setTimeout(()=>setMessage(''), 1000); return }
       const dataUrl = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onerror = () => rej(''); r.onload = () => res(String(r.result)); r.readAsDataURL(f) })
       setTextbook({ klass, section, subject, name: f.name, mime: f.type || 'application/octet-stream', dataUrl, chapterId: chapterId || undefined } as any)
-      loadAll(); setMessage('Textbook published.'); setTimeout(()=>setMessage(''), 1200)
+      loadAll(); setMessage('Textbook published.'); setTimeout(()=>setMessage(''), 1600)
       setPendingTB(null); setPendingChapterTB(null); setSelChapter('')
       setPendingTBName(''); setPendingCTBName('')
     } catch { setMessage('Failed to publish'); setTimeout(()=>setMessage(''), 1200) }
   }
 
-  const addLink = (kind: 'materials' | 'pyqs') => {
+  const addLink = (kind: 'materials') => {
     try {
-      const raw = (kind === 'materials' ? linkInput : pyqLinkInput).trim(); const u = new URL(raw)
-      // Directly publish links (simple publish)
+      const raw = linkInput.trim(); const u = new URL(raw)
       const item: AttachmentLink = { type: 'link', url: u.toString() }
-      if (kind === 'materials') { addMaterial(klass, section, subject, item); setLinkInput('') }
-      else { addPyq(klass, section, subject, item); setPyqLinkInput('') }
+      addMaterial(klass, section, subject, item); setLinkInput('')
       loadAll(); setMessage('Link published.'); setTimeout(()=>setMessage(''), 1000)
     } catch { setMessage('Enter a valid URL starting with http'); setTimeout(()=>setMessage(''), 1200) }
   }
@@ -130,19 +142,47 @@ export default function TeacherAcademicContent() {
       setMessage('Failed to publish one or more files'); setTimeout(()=>setMessage(''), 1500)
     }
   }
-  const publishPyqs = async () => {
+  const generateSyllabusFromContentsPdf = async () => {
+    if (!klass || !section || !subject) {
+      setMessage('Select class, section, and subject first.'); setTimeout(()=>setMessage(''), 1500)
+      return
+    }
+    if (!pendingSylFile) {
+      setMessage('Select a contents/index PDF first.'); setTimeout(()=>setMessage(''), 1500)
+      return
+    }
     try {
-      for (const f of pendingPyqFiles) {
-        const dataUrl = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onerror = () => rej('read-error'); r.onload = () => res(String(r.result)); r.readAsDataURL(f) })
-        addPyq(klass, section, subject, { type: 'file', name: f.name, mime: f.type || 'application/octet-stream', dataUrl })
+      setMessage('Reading contents PDF to build syllabus...')
+      const arrayBuffer = await pendingSylFile.arrayBuffer()
+      const pdfjs: any = await import('pdfjs-dist/build/pdf')
+      if (pdfjs.GlobalWorkerOptions && pdfjs.version) {
+        pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`
       }
-      setPendingPyqFiles([])
-      loadAll(); setMessage('PYQs published.'); setTimeout(()=>setMessage(''), 1000)
+      const getDocument = pdfjs.getDocument
+      if (!getDocument) throw new Error('PDF engine not available')
+      const loadingTask = getDocument({ data: arrayBuffer })
+      const pdf = await loadingTask.promise
+      const maxPages = Math.min(pdf.numPages || 1, 8)
+      let allText = ''
+      for (let i = 1; i <= maxPages; i++) {
+        const page = await pdf.getPage(i)
+        const content = await page.getTextContent()
+        const strings = (content.items || []).map((it: any) => it.str || '').filter(Boolean)
+        allText += strings.join(' ') + '\n'
+      }
+      const nextChapters = parseChaptersFromIndex(allText)
+      if (!nextChapters.length) {
+        setMessage('Could not detect chapters from contents PDF.'); setTimeout(()=>setMessage(''), 2500)
+        return
+      }
+      setChapters(nextChapters)
+      saveSyllabus({ klass, section, subject, chapters: nextChapters })
+      setMessage('Syllabus auto-generated from contents PDF.'); setTimeout(()=>setMessage(''), 2500)
+      setPendingSylFile(null); setPendingSylName('')
     } catch {
-      setMessage('Failed to publish one or more files'); setTimeout(()=>setMessage(''), 1500)
+      setMessage('Failed to auto-generate syllabus from contents PDF.'); setTimeout(()=>setMessage(''), 2500)
     }
   }
-
   const subjectOptions = React.useMemo(() => {
     if (!teacher) return [] as string[]
     const subs = getAssignedSubjectsForTeacher(teacher.name, klass, section)
@@ -153,7 +193,7 @@ export default function TeacherAcademicContent() {
   return (
     <div className="dash">
       <h2 className="title">Academic Syllabus</h2>
-      <p className="subtitle">Create syllabus, upload textbook, notes/materials, and PYQs per subject.</p>
+      <p className="subtitle">Upload a separate contents/index PDF to auto-generate syllabus; manage textbooks and notes/materials per subject.</p>
 
       <div className="chart-card" style={{display:'grid', gap:10}}>
         <div className="row">
@@ -174,42 +214,31 @@ export default function TeacherAcademicContent() {
 
       <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop:12}}>
         <div className="chart-card">
-          <div className="chart-title">Syllabus — Chapters & Subtopics</div>
+          <div className="chart-title">Syllabus — Auto-generated from Contents PDF</div>
+          <div className="note" style={{marginBottom:8}}>
+            Upload the chapter contents / index as a separate PDF here. The system will read that PDF and automatically create the syllabus for all chapters. Manual add is disabled.
+          </div>
+          <div className="row" style={{marginBottom:8}}>
+            <input
+              className="input"
+              type="file"
+              accept="application/pdf,application/*,.pdf"
+              onChange={e => {
+                const f = e.target.files?.[0] || null
+                setPendingSylFile(f)
+                setPendingSylName(f ? f.name : '')
+              }}
+            />
+            <button className="btn" type="button" onClick={generateSyllabusFromContentsPdf}>Generate Syllabus</button>
+          </div>
+          {pendingSylName && <div className="note" style={{marginBottom:8}}>Selected contents PDF: {pendingSylName}</div>}
           <div style={{display:'grid', gap:8}}>
-            <div className="row">
-              <input className="input" placeholder="Chapter title (e.g., Chapter 1 — Algebra)" value={newChapterTitle} onChange={e=>setNewChapterTitle(e.target.value)} />
-              <button className="btn-ghost" onClick={addChapter}>Add Chapter</button>
-            </div>
             {chapters.map((ch, idx) => (
               <div key={ch.id} style={{border:'1px solid var(--panel-border)', borderRadius:10, padding:10}}>
-                <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-                  <div style={{fontWeight:800}}>{idx+1}. {ch.title}</div>
-                  <div className="row" style={{gap:8, margin:0}}>
-                    <button className="btn-ghost" onClick={()=>addSubtopic(ch.id)}>+ Subtopic</button>
-                    <button className="btn-ghost" onClick={()=>onDeleteChapter(ch.id)} title="Delete chapter">Delete</button>
-                  </div>
-                </div>
-                <div style={{display:'grid', gap:6, marginTop:6}}>
-                  {ch.subtopics.map((s,i)=> (
-                    <div key={s.id} style={{display:'grid', gridTemplateColumns:'1fr auto', gap:6, alignItems:'center', border:'1px dashed var(--panel-border)', borderRadius:8, padding:'6px 8px'}}>
-                      <div>
-                        <div style={{fontWeight:700}}>{idx+1}.{i+1} {s.title}</div>
-                        {s.details && <div className="note">{s.details}</div>}
-                      </div>
-                      <button className="btn-ghost" onClick={()=> onDeleteSubtopic(ch.id, s.id)} title="Delete subtopic">Delete</button>
-                    </div>
-                  ))}
-                  {ch.subtopics.length === 0 && <div className="note">No subtopics yet.</div>}
-                  <div className="row">
-                    <input className="input" placeholder={`Subtopic for ${ch.title} (e.g., ${idx+1}.1 Introduction)`} value={(subDraft[ch.id]?.title)||''} onChange={e=> setSubDraft(prev => ({...prev, [ch.id]: { ...(prev[ch.id]||{title:'',details:''}), title: e.target.value }}))} />
-                    <input className="input" placeholder="Details (optional)" value={(subDraft[ch.id]?.details)||''} onChange={e=> setSubDraft(prev => ({...prev, [ch.id]: { ...(prev[ch.id]||{title:'',details:''}), details: e.target.value }}))} />
-                    <button className="btn-ghost" onClick={()=>addSubtopic(ch.id)}>Add Subtopic</button>
-                  </div>
-                </div>
+                <div style={{fontWeight:800}}>{idx+1}. {ch.title}</div>
               </div>
             ))}
-            {chapters.length === 0 && <div className="note">No chapters yet.</div>}
-            <div className="actions"><button className="btn" onClick={onSaveSyllabus}>Publish Syllabus</button></div>
+            {chapters.length === 0 && <div className="note">No syllabus detected yet. Upload a contents/index PDF and click Generate Syllabus.</div>}
           </div>
         </div>
 
@@ -280,65 +309,38 @@ export default function TeacherAcademicContent() {
         </div>
       )}
 
-      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop:12}}>
-        <div className="chart-card">
-          <div className="chart-title">Notes & Materials</div>
-          <div className="row"><input className="input" placeholder="https://link.to/material" value={linkInput} onChange={e=>setLinkInput(e.target.value)} /><button className="btn-ghost" onClick={()=>addLink('materials')}>Publish Link</button></div>
-          <div className="row"><input className="input" type="file" multiple accept="application/pdf,application/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.zip,.rar,image/*,video/*,audio/*" onChange={e=> addFiles(e.target.files, 'materials')} /><button className="btn" type="button" onClick={publishMaterials} disabled={pendingMatFiles.length===0}>Publish Files</button></div>
-          {pendingMatFiles.length>0 && (
-            <div className="note" style={{marginTop:6}}>Staged: {pendingMatFiles.map(f=>f.name).join(', ')}</div>
-          )}
-          <div className="chart-title" style={{marginTop:10}}>Published Materials (Logs)</div>
-          <div style={{display:'grid', gap:6, marginTop:6}}>
-            {materials.map((m, i) => {
-              const isFile = m.type === 'file'
-              const name = isFile ? (m as AttachmentFile).name : (m as AttachmentLink).url
-              const url = isFile ? (m as AttachmentFile).dataUrl : (m as AttachmentLink).url
-              return (
-                <div key={i} style={{display:'grid', gridTemplateColumns:'1fr auto auto auto', gap:8, alignItems:'center', border:'1px dashed var(--panel-border)', borderRadius:8, padding:'6px 10px'}}>
-                  <div style={{fontWeight:700, overflow:'hidden', textOverflow:'ellipsis'}} title={name}>{name}</div>
-                  {isFile ? (
-                    <button className="btn-ghost" onClick={()=> setViewer({ url, name })}>View</button>
-                  ) : (
-                    <a className="btn-ghost" href={url} target="_blank" rel="noopener noreferrer">Open</a>
-                  )}
-                  <a className="btn-ghost" href={url} download>Download</a>
-                  <button className="btn-ghost" onClick={()=>{ removeMaterial(klass, section, subject, i); loadAll() }}>Remove</button>
-                </div>
-              )
-            })}
-            {materials.length === 0 && <div className="note">No materials yet.</div>}
-          </div>
-        </div>
-
-        <div className="chart-card">
-          <div className="chart-title">Previous Year Question Papers</div>
-          <div className="row"><input className="input" placeholder="https://link.to/pyq" value={pyqLinkInput} onChange={e=>setPyqLinkInput(e.target.value)} /><button className="btn-ghost" onClick={()=>addLink('pyqs')}>Publish Link</button></div>
-          <div className="row"><input className="input" type="file" multiple accept="application/pdf,application/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.zip,.rar,image/*,video/*,audio/*" onChange={e=> addFiles(e.target.files, 'pyqs')} /><button className="btn" type="button" onClick={publishPyqs} disabled={pendingPyqFiles.length===0}>Publish Files</button></div>
-          {pendingPyqFiles.length>0 && (
-            <div className="note" style={{marginTop:6}}>Staged: {pendingPyqFiles.map(f=>f.name).join(', ')}</div>
-          )}
-          <div className="chart-title" style={{marginTop:10}}>Published PYQs (Logs)</div>
-          <div style={{display:'grid', gap:6, marginTop:6}}>
-            {pyqs.map((m, i) => {
-              const isFile = m.type === 'file'
-              const name = isFile ? (m as AttachmentFile).name : (m as AttachmentLink).url
-              const url = isFile ? (m as AttachmentFile).dataUrl : (m as AttachmentLink).url
-              return (
-                <div key={i} style={{display:'grid', gridTemplateColumns:'1fr auto auto auto', gap:8, alignItems:'center', border:'1px dashed var(--panel-border)', borderRadius:8, padding:'6px 10px'}}>
-                  <div style={{fontWeight:700, overflow:'hidden', textOverflow:'ellipsis'}} title={name}>{name}</div>
-                  {isFile ? (
-                    <button className="btn-ghost" onClick={()=> setViewer({ url, name })}>View</button>
-                  ) : (
-                    <a className="btn-ghost" href={url} target="_blank" rel="noopener noreferrer">Open</a>
-                  )}
-                  <a className="btn-ghost" href={url} download>Download</a>
-                  <button className="btn-ghost" onClick={()=>{ removePyq(klass, section, subject, i); loadAll() }}>Remove</button>
-                </div>
-              )
-            })}
-            {pyqs.length === 0 && <div className="note">No question papers yet.</div>}
-          </div>
+      <div className="chart-card" style={{marginTop:12}}>
+        <div className="chart-title">Notes & Materials</div>
+        <div className="row"><input className="input" placeholder="https://link.to/material" value={linkInput} onChange={e=>setLinkInput(e.target.value)} /><button className="btn-ghost" onClick={()=>addLink('materials')}>Publish Link</button></div>
+        <div className="row"><input className="input" type="file" multiple accept="application/pdf,application/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.zip,.rar,image/*,video/*,audio/*" onChange={e=> {
+          const files = e.target.files
+          if (!files || files.length === 0) return
+          setPendingMatFiles(prev => [...prev, ...Array.from(files)])
+          setMessage('Files staged. Click Publish.'); setTimeout(()=>setMessage(''), 1000)
+        }} /><button className="btn" type="button" onClick={publishMaterials} disabled={pendingMatFiles.length===0}>Publish Files</button></div>
+        {pendingMatFiles.length>0 && (
+          <div className="note" style={{marginTop:6}}>Staged: {pendingMatFiles.map(f=>f.name).join(', ')}</div>
+        )}
+        <div className="chart-title" style={{marginTop:10}}>Published Materials (Logs)</div>
+        <div style={{display:'grid', gap:6, marginTop:6}}>
+          {materials.map((m, i) => {
+            const isFile = m.type === 'file'
+            const name = isFile ? (m as AttachmentFile).name : (m as AttachmentLink).url
+            const url = isFile ? (m as AttachmentFile).dataUrl : (m as AttachmentLink).url
+            return (
+              <div key={i} style={{display:'grid', gridTemplateColumns:'1fr auto auto auto', gap:8, alignItems:'center', border:'1px dashed var(--panel-border)', borderRadius:8, padding:'6px 10px'}}>
+                <div style={{fontWeight:700, overflow:'hidden', textOverflow:'ellipsis'}} title={name}>{name}</div>
+                {isFile ? (
+                  <button className="btn-ghost" onClick={()=> setViewer({ url, name })}>View</button>
+                ) : (
+                  <a className="btn-ghost" href={url} target="_blank" rel="noopener noreferrer">Open</a>
+                )}
+                <a className="btn-ghost" href={url} download>Download</a>
+                <button className="btn-ghost" onClick={()=>{ removeMaterial(klass, section, subject, i); loadAll() }}>Remove</button>
+              </div>
+            )
+          })}
+          {materials.length === 0 && <div className="note">No materials yet.</div>}
         </div>
       </div>
 

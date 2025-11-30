@@ -2,8 +2,11 @@
 import React from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { getClasses, getSectionsForClass, getSubjects, addCalendarEvent, addSubject, addClass, removeClass, addSectionToClass, removeSectionFromClass, listAssignments, saveAssignments, type TeachingAssignment, readCalendarByMonth, getHoursForClass, setHoursForClass, addSubjectToClassSection, removeSubjectFromClassSection, getClassSubjects } from '../../teacher/data'
+import { getClasses, getSectionsForClass, getSubjects, addCalendarEvent, addSubject, addClass, removeClass, addSectionToClass, removeSectionFromClass, listAssignments, saveAssignments, type TeachingAssignment, readCalendarByMonth, getHoursForClass, setHoursForClass, addSubjectToClassSection, removeSubjectFromClassSection, getClassSubjects, listTestsForClass, subjectAveragesForTest, getMarkSheet, readTotalsByTest, listTestsBySubject, rosterBy } from '../../teacher/data'
+import { LineChart, type LineSeries } from '../../components/LineChart'
+import { PieChart } from '../../components/PieChart'
 import { subjectColor, type ColorTag } from '../../lib/colors'
+import StudentsManager from './students-manager'
 
 function useTheme() {
   const [theme, setTheme] = React.useState<'light' | 'dark'>('light')
@@ -30,6 +33,8 @@ type Staff = { name: string; subjects?: string[]; subject?: string; role: string
 type Student = { usn: string; name: string; klass: string; section: 'A'|'B' }
 
 export default function AdminDashboard() {
+  const [mounted, setMounted] = React.useState(false)
+  React.useEffect(() => { setMounted(true) }, [])
   const pathname = usePathname()
   const { theme, toggle } = useTheme()
 
@@ -45,7 +50,7 @@ export default function AdminDashboard() {
   const menuRef = React.useRef<HTMLDivElement | null>(null)
 
   // Tabs
-  const tabs = ['Overview','Calendar','Setup','Staff','Students','Performance'] as const
+  const tabs = ['Overview','Calendar','Setup','Staff','Students','Performance','Students Portal'] as const
   type Tab = typeof tabs[number]
   const [tab, setTab] = React.useState<Tab>('Overview')
 
@@ -55,6 +60,8 @@ export default function AdminDashboard() {
   const [calTag, setCalTag] = React.useState('EVENT')
   const [calColor, setCalColor] = React.useState<'blue'|'green'|'orange'|'pink'|'violet'>('blue')
   const [calDesc, setCalDesc] = React.useState('')
+  const [calScopeClass, setCalScopeClass] = React.useState<string>('')
+  const [calScopeSection, setCalScopeSection] = React.useState<string>('')
   // Full calendar view state
   const [month, setMonth] = React.useState<Date>(() => new Date())
   const monthStr = `${MONTHS[month.getMonth()]} ${month.getFullYear()}`
@@ -99,13 +106,31 @@ export default function AdminDashboard() {
         if (ph) setPhoto(ph)
       }
     } catch {}
+    // Prime teachers from DB (fallback to local)
     try {
-      const tRaw = localStorage.getItem('school:teachers')
-      setStaff(tRaw ? JSON.parse(tRaw) : [])
+      fetch('/api/mysql/teachers/list').then(r=>r.json()).then(j => {
+        if (j && Array.isArray(j.items)) {
+          const arr = j.items.map((it:any) => ({ name: String(it.name||''), subjects: Array.isArray(it.subjects)? it.subjects: [] }))
+          localStorage.setItem('school:teachers', JSON.stringify(arr))
+          setStaff(arr as any)
+        }
+      }).catch(()=>{
+        const tRaw = localStorage.getItem('school:teachers')
+        setStaff(tRaw ? JSON.parse(tRaw) : [])
+      })
     } catch { setStaff([]) }
+    // Prime students from DB (fallback to local)
     try {
-      const sRaw = localStorage.getItem('school:students')
-      setStudents(sRaw ? JSON.parse(sRaw) : [])
+      fetch('/api/mysql/profiles/students').then(r=>r.json()).then(j => {
+        if (j && Array.isArray(j.items)) {
+          const arr = j.items.map((it:any) => ({ usn: String(it.roll||''), name: String(it.name||''), klass: String(it.grade||''), section: String(it.section||'') }))
+          localStorage.setItem('school:students', JSON.stringify(arr))
+          setStudents(arr as any)
+        }
+      }).catch(()=>{
+        const sRaw = localStorage.getItem('school:students')
+        setStudents(sRaw ? JSON.parse(sRaw) : [])
+      })
     } catch { setStudents([]) }
   }, [])
 
@@ -143,10 +168,12 @@ export default function AdminDashboard() {
   const onAddEvent = () => {
     if (!admin) return
     if (!calTitle.trim()) return
-    addCalendarEvent({ date: calDate, title: calTitle.trim(), tag: calTag.trim() || 'EVENT', color: calColor, description: calDesc.trim(), createdBy: admin.user })
+    const payload: any = { date: calDate, title: calTitle.trim(), tag: calTag.trim() || 'EVENT', color: calColor, description: calDesc.trim(), createdBy: admin.user }
+    if (calScopeClass) { payload.klass = calScopeClass; if (calScopeSection) payload.section = calScopeSection }
+    addCalendarEvent(payload)
     setCalTitle(''); setCalDesc('')
-    // refresh current month list if applicable
-    try { setEventsThisMonth(readCalendarByMonth(ymOf(month)) as any) } catch {}
+    // refresh current month list using same helper as teacher calendar
+    refreshMonthEvents()
   }
 
   // Persist staff list
@@ -221,6 +248,17 @@ export default function AdminDashboard() {
   type MarkSheet = { test: string; subject: string; klass: string; section: 'A'|'B'; date?: string; max: number; marks: Record<string, number> }
   function readMarks(): MarkSheet[] { try { const raw = localStorage.getItem('school:marks'); return raw ? JSON.parse(raw) : [] } catch { return [] } }
 
+  const [marksVersion, setMarksVersion] = React.useState(0)
+
+  React.useEffect(() => {
+    const bump = () => setMarksVersion(v => v + 1)
+    const onStorage = (e: StorageEvent) => { if (e.key === 'school:marks') bump() }
+    const onBus = (e: Event) => { try { const k = (e as CustomEvent).detail?.key; if (!k || k === 'school:marks') bump() } catch { bump() } }
+    window.addEventListener('storage', onStorage)
+    window.addEventListener('school:update', onBus as EventListener)
+    return () => { window.removeEventListener('storage', onStorage); window.removeEventListener('school:update', onBus as EventListener) }
+  }, [])
+
   const classPerf = React.useMemo(() => {
     const arr = readMarks()
     const key = (k: string, s: string) => `${k}|${s}`
@@ -242,7 +280,7 @@ export default function AdminDashboard() {
     // sort high to low
     out.sort((a,b) => b.pct - a.pct)
     return out
-  }, [tab])
+  }, [tab, marksVersion])
 
   const teacherPerf = React.useMemo(() => {
     const arr = readMarks()
@@ -269,12 +307,187 @@ export default function AdminDashboard() {
     }
     out.sort((a,b) => b.pct - a.pct)
     return out
-  }, [staff, tab])
+  }, [staff, tab, marksVersion])
+
+  // Performance filters (HOD analysis)
+  const [pfClass, setPfClass] = React.useState<string>(() => getClasses()[0] || '')
+  const [pfSection, setPfSection] = React.useState<string>(() => (getSectionsForClass((getClasses()[0]||''))[0] || ''))
+  React.useEffect(() => { setPfSection(prev => { const arr = getSectionsForClass(pfClass); return arr.includes(prev) ? prev : (arr[0] || '') }) }, [pfClass])
+
+  const pfSubjects = React.useMemo(() => {
+    const list = getClassSubjects(pfClass, pfSection)
+    return (list && list.length ? list : getSubjects())
+  }, [pfClass, pfSection, marksVersion])
+
+  const pfTests = React.useMemo(() => listTestsForClass(pfClass, pfSection), [pfClass, pfSection, marksVersion])
+  const [pfTeacher, setPfTeacher] = React.useState<string>('')
+  const pfTeacherOptions = React.useMemo(() => {
+    // Prefer explicit assignments; fallback to staff subject mapping
+    const assignedTeachers = Array.from(new Set(
+      assigns
+        .filter(a => a.klass === pfClass && a.section === pfSection)
+        .map(a => a.teacher)
+    ))
+    if (assignedTeachers.length) return assignedTeachers
+    // Fallback: teachers who have any of the subjects in this class/section
+    const set = new Set<string>()
+    for (const t of staff) {
+      const subs: string[] = Array.isArray((t as any).subjects) ? (t as any).subjects as string[] : ((t as any).subject ? [(t as any).subject as string] : [])
+      if (subs.some(s => pfSubjects.map(x => x.toLowerCase()).includes(s.toLowerCase()))) set.add(t.name)
+    }
+    return Array.from(set)
+  }, [assigns, staff, pfClass, pfSection, pfSubjects])
+  React.useEffect(() => {
+    setPfTeacher(prev => prev && pfTeacherOptions.includes(prev) ? prev : (pfTeacherOptions[0] || ''))
+  }, [pfTeacherOptions])
+
+  // Class averages by test (overall %) for latest two tests
+  const pfClassOverall = React.useMemo(() => {
+    const tests2 = pfTests.slice(0, 2)
+    const values: number[] = []
+    const details: Array<{ sum:number; total:number }> = []
+    for (const t of tests2) {
+      const totals = readTotalsByTest(pfClass, pfSection as any, t)
+      const sum = totals.reduce((s, tt) => s + tt.sum, 0)
+      const total = totals.reduce((s, tt) => s + tt.total, 0)
+      values.push(total ? Math.round((sum * 100) / total) : 0)
+      details.push({ sum, total })
+    }
+    return { tests: tests2, values, details }
+  }, [pfClass, pfSection, pfTests, marksVersion])
+
+  // Build grouped bar data: categories=subjects, series=tests
+  const pfSeries: Array<LineSeries> = React.useMemo(() => {
+    const palette = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6']
+    return pfTests.map((t, idx) => {
+      const avgs = subjectAveragesForTest(pfClass, pfSection, t)
+      const map = new Map(avgs.map(x => [x.subject.toLowerCase(), x.pct]))
+      const data = pfSubjects.map(sub => map.get(sub.toLowerCase()) ?? null)
+      return { name: t, color: palette[idx % palette.length], data } as BarSeries
+    })
+  }, [pfClass, pfSection, pfTests, pfSubjects, marksVersion])
+
+  // Subject labels with teacher name
+  const pfSubjectLabels = React.useMemo(() => {
+    return pfSubjects.map(sub => {
+      let teacher: string | undefined = assigns.find(a => a.klass === pfClass && a.section === pfSection && a.subject === sub)?.teacher
+      if (!teacher) {
+        const t = staff.find(x => {
+          const subs = (x as any).subjects as string[] | undefined
+          if (Array.isArray(subs)) return subs.some(s => s.toLowerCase() === sub.toLowerCase())
+          const s = (x as any).subject as string | undefined
+          return typeof s === 'string' && s.toLowerCase() === sub.toLowerCase()
+        })
+        teacher = t?.name
+      }
+      return teacher ? `${sub} — ${teacher}` : sub
+    })
+  }, [pfSubjects, assigns, staff, pfClass, pfSection])
+
+  // HOD: Teacher performance for selected class/section (overall across all tests)
+  const pfTeacherPerf = React.useMemo(() => {
+    try {
+      const raw = localStorage.getItem('school:marks')
+      const arr: Array<{ test:string; subject:string; klass:string; section:string; max:number; marks:Record<string,number> }> = raw ? JSON.parse(raw) : []
+      const filtered = arr.filter(m => m.klass === pfClass && String(m.section||'').toUpperCase() === String(pfSection||'').toUpperCase())
+      const map: Record<string, { sum:number; total:number }> = {}
+      for (const m of filtered) {
+        const subj = String(m.subject||'')
+        if (!map[subj]) map[subj] = { sum: 0, total: 0 }
+        const values = Object.values(m.marks || {}) as number[]
+        map[subj].sum += values.reduce((s,n)=> s + (Number(n)||0), 0)
+        map[subj].total += (m.max || 0) * values.length
+      }
+      const out: Array<{ subject:string; teacher?:string; pct:number; sum:number; total:number; tests:number }> = []
+      for (const subject of Object.keys(map)) {
+        const { sum, total } = map[subject]
+        // Resolve teacher via assignment first, else by staff subject mapping
+        let teacher: string | undefined = assigns.find(a => a.klass === pfClass && a.section === pfSection && a.subject === subject)?.teacher
+        if (!teacher) {
+          const t = staff.find(x => {
+            const subs = (x as any).subjects as string[] | undefined
+            if (Array.isArray(subs)) return subs.some(s => s.toLowerCase() === subject.toLowerCase())
+            const sub = (x as any).subject as string | undefined
+            return typeof sub === 'string' && sub.toLowerCase() === subject.toLowerCase()
+          })
+          teacher = t?.name
+        }
+        const tests = new Set(filtered.filter(m => String(m.subject||'').toLowerCase() === subject.toLowerCase()).map(m => m.test)).size
+        out.push({ subject, teacher, pct: total ? Math.round((sum*100)/total) : 0, sum, total, tests })
+      }
+      out.sort((a,b) => b.pct - a.pct)
+      return out
+    } catch { return [] }
+  }, [assigns, staff, pfClass, pfSection, marksVersion])
+
+  // Selected teacher details: subjects taught in this class/section
+  const pfTeacherSubjects = React.useMemo(() => {
+    if (!pfTeacher) return []
+    const subjects = new Set<string>()
+    // Use assignments if present
+    assigns
+      .filter(a => a.klass === pfClass && a.section === pfSection && a.teacher === pfTeacher)
+      .forEach(a => subjects.add(a.subject))
+    // Fallback to staff mapping intersected with pfSubjects
+    if (subjects.size === 0) {
+      const t = staff.find(x => x.name === pfTeacher)
+      if (t) {
+        const subs: string[] = Array.isArray((t as any).subjects) ? (t as any).subjects as string[] : ((t as any).subject ? [(t as any).subject as string] : [])
+        for (const s of subs) { if (pfSubjects.map(x=>x.toLowerCase()).includes(s.toLowerCase())) subjects.add(s) }
+      }
+    }
+    return Array.from(subjects)
+  }, [pfTeacher, assigns, staff, pfClass, pfSection, pfSubjects])
+  const pfTeacherSeries: BarSeries[] = React.useMemo(() => {
+    const palette = ['#0ea5e9', '#8b5cf6', '#22c55e', '#ef4444', '#f59e0b']
+    return pfTeacherSubjects.map((subj, idx) => ({
+      name: subj,
+      color: palette[idx % palette.length],
+      data: pfTests.map(test => {
+        const avgs = subjectAveragesForTest(pfClass, pfSection, test)
+        const found = avgs.find(x => x.subject.toLowerCase() === subj.toLowerCase())
+        return found ? found.pct : null
+      })
+    }))
+  }, [pfTeacherSubjects, pfTests, pfClass, pfSection, marksVersion])
+  const pfTeacherOverallSeries: BarSeries[] = React.useMemo(() => [
+    {
+      name: 'Teacher overall %',
+      color: '#334155',
+      data: pfTests.map(test => {
+        const avgs = subjectAveragesForTest(pfClass, pfSection, test)
+        const vals = avgs.filter(x => pfTeacherSubjects.map(s=>s.toLowerCase()).includes(x.subject.toLowerCase())).map(x=>x.pct)
+        if (!vals.length) return null
+        return Math.round(vals.reduce((a,b)=>a+b,0) / vals.length)
+      })
+    }
+  ], [pfTeacherSubjects, pfTests, pfClass, pfSection, marksVersion])
 
   // Calendar recompute when month changes
-  React.useEffect(() => {
-    try { setEventsThisMonth(readCalendarByMonth(ymOf(month)) as any) } catch { setEventsThisMonth([]) }
-  }, [month])
+  const refreshMonthEvents = React.useCallback(() => {
+    try {
+      const ym = ymOf(month)
+      const items = readCalendarByMonth(ym, calScopeClass || undefined, calScopeSection || undefined) as any
+      setEventsThisMonth(Array.isArray(items) ? items : [])
+    } catch {
+      setEventsThisMonth([])
+    }
+  }, [month, calScopeClass, calScopeSection])
+
+  React.useEffect(() => { refreshMonthEvents() }, [refreshMonthEvents])
+
+  if (!mounted) {
+    return (
+      <div>
+        <div className="topbar">
+          <div className="topbar-inner">
+            <div className="brand-mark"><span className="dot" /><strong>HOD</strong></div>
+          </div>
+        </div>
+        <div className="dash-wrap"><div className="dash"><p className="subtitle">Loading…</p></div></div>
+      </div>
+    )
+  }
 
   return (
     <div>
@@ -291,7 +504,7 @@ export default function AdminDashboard() {
             {photo ? (
               <img ref={avatarRef as React.MutableRefObject<HTMLImageElement | null>} src={photoDraft ?? photo} alt="Profile" className="avatar" onClick={()=>setMenuOpen(o=>!o)} />
             ) : (
-              <div ref={avatarRef} className="avatar" title="Set profile photo" onClick={()=>setMenuOpen(o=>!o)} />
+              <div ref={avatarRef as React.RefObject<HTMLDivElement>} className="avatar" title="Set profile photo" onClick={()=>setMenuOpen(o=>!o)} />
             )}
             {menuOpen && (
               <div ref={menuRef} className="menu" role="dialog" aria-label="Profile settings">
@@ -381,6 +594,35 @@ export default function AdminDashboard() {
                   <button className="btn-ghost" onClick={() => setMonth(m => new Date(m.getFullYear(), m.getMonth() - 1, 1))}>Prev</button>
                   <div className="cal-title">{monthStr}</div>
                   <button className="btn-ghost" onClick={() => setMonth(m => new Date(m.getFullYear(), m.getMonth() + 1, 1))}>Next</button>
+                  <div style={{display:'flex', gap:6, marginLeft:12, alignItems:'center'}}>
+                    <select
+                      className="input select"
+                      value={calScopeClass}
+                      onChange={e => { setCalScopeClass(e.target.value); setCalScopeSection('') }}
+                      style={{minWidth:120}}
+                    >
+                      <option value="">Whole School</option>
+                      {getClasses().map(c => (<option key={c} value={c}>{c}</option>))}
+                    </select>
+                    <select
+                      className="input select"
+                      value={calScopeSection}
+                      onChange={e => setCalScopeSection(e.target.value)}
+                      disabled={!calScopeClass}
+                      style={{minWidth:110}}
+                    >
+                      <option value="">All Sections</option>
+                      {(calScopeClass ? getSectionsForClass(calScopeClass) : []).map(s => (<option key={s} value={s}>{s}</option>))}
+                    </select>
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      onClick={refreshMonthEvents}
+                      title="Fetch events for selected class/section"
+                    >
+                      Get
+                    </button>
+                  </div>
                 </div>
                 <div className="cal-grid">
                   {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => (
@@ -585,87 +827,35 @@ export default function AdminDashboard() {
         {tab === 'Students' && (
           <div className="dash">
             <h2 className="title">Students</h2>
-            <p className="subtitle">Manage roster across classes and sections.</p>
-            <div className="chart-card" style={{marginTop:12}}>
-              <div className="chart-title">Add Student</div>
-              <div className="row" style={{marginTop:6}}>
-              <input className="input" placeholder="USN" value={nUsn} onChange={e=>setNUsn(e.target.value)} />
-              <input className="input" placeholder="Name" value={nName} onChange={e=>setNName(e.target.value)} />
-              <select className="input select" value={nKlass} onChange={e=>setNKlass(e.target.value)}>{getClasses().map(c=> <option key={c}>{c}</option>)}</select>
-              <select className="input select" value={nSection} onChange={e=>setNSection(e.target.value)}>{getSectionsForClass(nKlass).map(s=> <option key={s}>{s}</option>)}</select>
-              <button className="btn-ghost" type="button" onClick={()=>{
-                const usn = nUsn.trim(); const name = nName.trim(); if (!usn||!name) return; saveStudents([...students, { usn, name, klass: nKlass, section: nSection } as any]); setNUsn(''); setNName('')
-              }}>Add Student</button>
-              </div>
-            </div>
-            <div className="note" style={{marginTop:8}}>
-              {(() => {
-                const filtered = students.filter(s => s.klass === nKlass)
-                const by: Record<string, number> = {}
-                filtered.forEach(s => { by[s.section] = (by[s.section] || 0) + 1 })
-                const breakdown = Object.keys(by).sort().map(sec => `${sec}: ${by[sec]}`).join(', ')
-                return `Showing ${nKlass || '-'} — Total: ${filtered.length}${breakdown ? ` (${breakdown})` : ''}`
-              })()}
-            </div>
-            <div className="chart-card" style={{display:'grid', gap:8, marginTop:8}}>
-              <div className="chart-title">Students in {nKlass || '-'}</div>
-              {students.filter(s => s.klass === nKlass).map((s,i)=> (
-                <div key={i} style={{display:'grid', gridTemplateColumns:'100px 1fr 1fr 80px', gap:8, alignItems:'center', border:'1px solid var(--panel-border)', borderRadius:8, padding:'8px 10px'}}>
-                  <div style={{fontWeight:700}}>{s.usn}</div>
-                  <div>{s.name}</div>
-                  <div className="note">{s.klass} / {s.section}</div>
-                  <button className="btn-ghost" type="button" onClick={()=> saveStudents(students.filter(st => st.usn !== s.usn))}>Remove</button>
-                </div>
-              ))}
-              {students.filter(s => s.klass === nKlass).length === 0 && (
-                <div className="note">No students yet for {nKlass}.</div>
-              )}
-            </div>
+            <p className="subtitle">Admitted students appear automatically after parents submit applications. Assign roll numbers and sections here. Changes reflect immediately.</p>
+
+            <StudentsManager />
           </div>
         )}
 
         {tab === 'Performance' && (
           <div className="dash">
             <h2 className="title">Performance Analytics</h2>
-            <p className="subtitle">Class-wise and subject-wise averages with quick visuals.</p>
-            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop:12}}>
-              <div className="chart-card">
-                <div className="chart-title">Class-wise Overall (%)</div>
-                <div className="chart-grid">
-                  {classPerf.map((c, i) => (
-                    <div key={i} className="chart-row">
-                      <div style={{display:'grid', gap:6}}>
-                        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-                          <strong>{c.klass} / {c.section}</strong>
-                          <span className="chip-pill">{c.pct}%</span>
-                        </div>
-                        <div className="bar"><div className="bar-fill" style={{ width: `${Math.max(0, Math.min(100, c.pct))}%` }} /></div>
-                      </div>
-                      <div style={{textAlign:'right', fontWeight:800}}>{c.pct}%</div>
-                    </div>
-                  ))}
-                  {classPerf.length === 0 && <div className="note">No data available yet.</div>}
-                </div>
-              </div>
-              <div className="chart-card">
-                <div className="chart-title">Subject Averages (%)</div>
-                <div className="chart-grid">
-                  {teacherPerf.map((t, i) => (
-                    <div key={i} className="chart-row">
-                      <div style={{display:'grid', gap:6}}>
-                        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-                          <strong>{t.subject}</strong>{t.teacher ? <span className="note">&nbsp;— {t.teacher}</span> : null}
-                        </div>
-                        {(() => { const color = subjectColor(t.subject) as ColorTag; return (
-                          <div className="bar"><div className={`bar-fill bar-${color}`} style={{ width: `${Math.max(0, Math.min(100, t.pct))}%` }} /></div>
-                        ) })()}
-                      </div>
-                      <div style={{textAlign:'right', fontWeight:800}}>{t.pct}%</div>
-                    </div>
-                  ))}
-                  {teacherPerf.length === 0 && <div className="note">No data available yet.</div>}
-                </div>
-              </div>
+            <p className="subtitle">Compare all conducted tests, see pass trends by class/section, and drill into detailed teacher performance.</p>
+            <div className="chart-card" style={{marginTop:12}}>
+              <PerformancePassPanel
+                staff={staff}
+                assigns={assigns}
+              />
+            </div>
+          </div>
+        )}
+
+        {tab === 'Students Portal' && (
+          <div className="dash">
+            <h2 className="title">Students Portal (Embedded)</h2>
+            <p className="subtitle">The full students site, shown inside SAS for quick access.</p>
+            <div className="card" style={{ marginTop: 12, padding: 0, overflow: 'hidden' }}>
+              <iframe
+                src="http://localhost:3030/"
+                title="Students Portal"
+                style={{ width: '100%', height: '600px', border: 'none' }}
+              />
             </div>
           </div>
         )}
@@ -807,6 +997,255 @@ function ClassHoursManager() {
       </div>
       <div className="note" style={{marginTop:8}}>Default for new classes: 5 hours (unless changed here).</div>
       {message && <div className="profile-message" style={{marginTop:8}}>{message}</div>}
+    </div>
+  )
+}
+
+function PerformancePassPanel(props: { staff: Staff[]; assigns: TeachingAssignment[] }) {
+  const { staff, assigns } = props
+  const [klass, setKlass] = React.useState<string>(() => getClasses()[0] || '')
+  const [section, setSection] = React.useState<string>(() => (getSectionsForClass((getClasses()[0]||''))[0] || ''))
+  React.useEffect(() => { setSection(prev => { const arr = getSectionsForClass(klass); return arr.includes(prev) ? prev : (arr[0] || '') }) }, [klass])
+  const [teacher, setTeacher] = React.useState<string>('')
+  const [showTeacher, setShowTeacher] = React.useState(false)
+  const [version, setVersion] = React.useState(0) // bump on click
+
+  const teacherOptions = React.useMemo(() => {
+    const assigned = Array.from(new Set(assigns.filter(a => a.klass === klass && a.section === section).map(a => a.teacher)))
+    if (assigned.length) return assigned
+    const set = new Set<string>()
+    for (const t of staff) {
+      const subs: string[] = Array.isArray((t as any).subjects) ? (t as any).subjects as string[] : ((t as any).subject ? [(t as any).subject as string] : [])
+      if (subs.length) set.add(t.name)
+    }
+    return Array.from(set)
+  }, [assigns, staff, klass, section])
+  React.useEffect(() => { setTeacher(prev => prev && teacherOptions.includes(prev) ? prev : (teacherOptions[0] || '')) }, [teacherOptions])
+
+  // Helper: read all marks
+  const readAllMarks = React.useCallback(() => {
+    try {
+      const raw = localStorage.getItem('school:marks')
+      const arr: Array<{ test:string; subject:string; klass:string; section:string; max:number; marks:Record<string, number> }> = raw ? JSON.parse(raw) : []
+      return arr
+    } catch { return [] }
+  }, [])
+
+  // Class-level per-test statistics across all subjects
+  const classPerTest = React.useMemo(() => {
+    if (!klass || !section) return []
+    const roster = rosterBy(klass, section)
+    const tests = listTestsForClass(klass, section as any)
+    const all = readAllMarks()
+    const out: Array<{ test:string; appeared:number; passed:number; failed:number; passPct:number }> = []
+    for (const t of tests) {
+      const sheets = all.filter(m => m.klass === klass && String(m.section||'').toUpperCase() === String(section||'').toUpperCase() && String(m.test||'').toLowerCase() === String(t||'').toLowerCase())
+      let appeared = 0, passed = 0
+      for (const ms of sheets) {
+        const entries = Object.values(ms.marks || {}) as number[]
+        const max = Number(ms.max || 0)
+        const threshold = Math.round(max * 0.35)
+        appeared += entries.length
+        for (const v of entries) if (Number(v||0) >= threshold) passed += 1
+      }
+      const failed = Math.max(0, appeared - passed)
+      const passPct = appeared ? Math.round((passed * 100) / appeared) : 0
+      out.push({ test: t, appeared, passed, failed, passPct })
+    }
+    return out
+  }, [klass, section, version, readAllMarks])
+
+  // Teacher per-test statistics across that teacher's subjects in the class/section
+  const teacherPerTest = React.useMemo(() => {
+    if (!klass || !section || !teacher) return []
+    // Resolve teacher subjects for this class/section
+    const subjects = (() => {
+      const assigned = assigns.filter(a => a.klass === klass && a.section === section && a.teacher === teacher).map(a => a.subject)
+      if (assigned.length) return assigned
+      const t = staff.find(x => x.name === teacher)
+      const subs: string[] = t ? (Array.isArray((t as any).subjects) ? (t as any).subjects as string[] : ((t as any).subject ? [(t as any).subject as string] : [])) : []
+      const classSubs = getClassSubjects(klass, section)
+      const set = new Set(classSubs.map(s => s.toLowerCase()))
+      return subs.filter(s => set.has(s.toLowerCase()))
+    })()
+    if (subjects.length === 0) return []
+    const tests = listTestsForClass(klass, section as any)
+    const all = readAllMarks()
+    const out: Array<{ test:string; appeared:number; passed:number; failed:number; passPct:number }> = []
+    for (const t of tests) {
+      const sheets = all.filter(m =>
+        m.klass === klass &&
+        String(m.section||'').toUpperCase() === String(section||'').toUpperCase() &&
+        String(m.test||'').toLowerCase() === String(t||'').toLowerCase() &&
+        subjects.map(s=>s.toLowerCase()).includes(String(m.subject||'').toLowerCase())
+      )
+      let appeared = 0, passed = 0
+      for (const ms of sheets) {
+        const entries = Object.values(ms.marks || {}) as number[]
+        const max = Number(ms.max || 0)
+        const threshold = Math.round(max * 0.35)
+        appeared += entries.length
+        for (const v of entries) if (Number(v||0) >= threshold) passed += 1
+      }
+      const failed = Math.max(0, appeared - passed)
+      const passPct = appeared ? Math.round((passed * 100) / appeared) : 0
+      out.push({ test: t, appeared, passed, failed, passPct })
+    }
+    return out
+  }, [klass, section, teacher, assigns, staff, version, readAllMarks])
+
+  const teacherTests = React.useMemo(() => classPerTest.map(x => x.test), [classPerTest])
+  const [teacherTest, setTeacherTest] = React.useState<string>('')
+  React.useEffect(() => {
+    setTeacherTest(prev => prev && teacherTests.includes(prev) ? prev : (teacherTests[0] || ''))
+  }, [teacherTests, showTeacher])
+
+  const teacherBarSeries: LineSeries[] = React.useMemo(() => [
+    { name: 'Pass %', color: '#2563eb', data: teacherPerTest.map(r => r.passPct) }
+  ], [teacherPerTest])
+
+  const teacherPieData = React.useMemo(() => {
+    const row = teacherPerTest.find(r => r.test === teacherTest)
+    const passed = row ? row.passed : 0
+    const failed = row ? row.failed : 0
+    return [
+      { label: 'Passed', value: passed, color: '#10b981' },
+      { label: 'Failed', value: failed, color: '#ef4444' },
+    ]
+  }, [teacherPerTest, teacherTest])
+
+  return (
+    <div style={{display:'grid', gap:12}}>
+      <div className="row" style={{padding:'0 12px 0'}}>
+        <select className="input select" value={klass} onChange={e=> setKlass(e.target.value)}>
+          {getClasses().map(c=> <option key={c}>{c}</option>)}
+        </select>
+        <select className="input select" value={section} onChange={e=> setSection(e.target.value)}>
+          {getSectionsForClass(klass).map(s=> <option key={s}>{s}</option>)}
+        </select>
+        <button className="btn" type="button" onClick={()=> setVersion(v=> v+1)}>Get Performance</button>
+        <button className="btn-ghost" type="button" onClick={()=> setShowTeacher(v => !v)}>{showTeacher ? 'Hide' : 'Teacher performance'}</button>
+      </div>
+      <div className="chart-card" style={{padding:'0 12px 12px'}}>
+        <div className="chart-title">Class Performance — {klass} / {section}</div>
+        {classPerTest.length === 0 ? (
+          <div className="note">No tests found for this class/section.</div>
+        ) : (
+          <>
+            <div className="grid" style={{alignItems:'stretch', marginBottom: 10}}>
+              <section className="cal" aria-label="Class pass trend">
+                <div style={{padding:12}}>
+                  <LineChart
+                    title="Pass % by test"
+                    categories={classPerTest.map(r=>r.test)}
+                    series={[{ name: 'Pass %', color: '#0ea5e9', data: classPerTest.map(r=>r.passPct) }]}
+                    yMax={100}
+                  />
+                </div>
+              </section>
+              <aside className="events">
+                <div className="events-head">Test details</div>
+                <div className="note-list">
+                  {classPerTest.map((row, idx) => {
+                    const prev = idx > 0 ? classPerTest[idx - 1] : null
+                    const diff = prev ? row.passPct - prev.passPct : 0
+                    const diffLabel = prev ? (diff > 0 ? `▲ +${diff}% vs previous` : diff < 0 ? `▼ ${diff}% vs previous` : 'No change vs previous') : 'First test for this class'
+                    return (
+                      <div key={row.test} className={`note-card note-${idx%2===0?'green':'blue'}`} style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                        <div>
+                          <div className="note-chip">{row.test}</div>
+                          <div className="note-title">Class Pass: {row.passPct}%</div>
+                          <small>Appeared {row.appeared} • Passed {row.passed} • Failed {row.failed}</small>
+                        </div>
+                        <div className="note" style={{textAlign:'right', minWidth:140}}>{diffLabel}</div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </aside>
+            </div>
+          </>
+        )}
+      </div>
+      {showTeacher && (
+        <div className="chart-card" style={{padding:'0 12px 12px'}}>
+          <div className="chart-title">Teacher Performance</div>
+          <div className="row" style={{marginBottom:8}}>
+            <select className="input select" value={teacher} onChange={e=> setTeacher(e.target.value)}>
+              {teacherOptions.length === 0 ? <option value="">No teachers</option> : null}
+              {teacherOptions.map(t=> <option key={t} value={t}>{t}</option>)}
+            </select>
+            <select className="input select" value={teacherTest} onChange={e=> setTeacherTest(e.target.value)}>
+              {teacherTests.map(t=> <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          {!teacher ? (
+            <div className="note">Select a teacher to view their performance for this class/section.</div>
+          ) : teacherPerTest.length === 0 ? (
+            <div className="note">No tests or subjects mapped for this teacher here.</div>
+          ) : (
+            <>
+              <div className="grid" style={{alignItems:'stretch'}}>
+                <section className="cal" aria-label="Teacher pass trend">
+                  <div style={{padding:12}}>
+                    <LineChart title={`Pass % by test — ${teacher}`} categories={teacherPerTest.map(r=>r.test)} series={teacherBarSeries} yMax={100} />
+                  </div>
+                </section>
+                <aside className="events">
+                  <div className="events-head">Pass vs Fail — {teacherTest}</div>
+                  <div style={{padding:12}}>
+                    <PieChart data={teacherPieData} />
+                  </div>
+                </aside>
+              </div>
+              <div className="note-list" style={{marginTop:10}}>
+                {teacherPerTest.map((row, idx) => {
+                  const classRow = classPerTest.find(r => r.test === row.test)
+                  const classPct = classRow ? classRow.passPct : null
+                  const diff = classPct !== null ? row.passPct - classPct : null
+                  const diffText = diff === null ? '—' : diff > 0 ? `+${diff}% vs class` : diff < 0 ? `${diff}% vs class` : 'Same as class'
+                  return (
+                    <div key={row.test} className={`note-card note-${idx%2===0?'violet':'pink'}`} style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                      <div>
+                        <div className="note-chip">{row.test}</div>
+                        <div className="note-title">Teacher Pass: {row.passPct}%</div>
+                        <small>Appeared {row.appeared} • Passed {row.passed} • Failed {row.failed}</small>
+                      </div>
+                      <div className="note" style={{textAlign:'right', minWidth:160}}>
+                        {classPct !== null && <div>Class Pass: {classPct}%</div>}
+                        <div>{diffText}</div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ClassPie({ data }: { data: Array<{ test:string; appeared:number; passed:number; failed:number; passPct:number }> }) {
+  const tests = data.map(d => d.test)
+  const [t, setT] = React.useState<string>(() => tests[0] || '')
+  React.useEffect(() => { setT(prev => prev && tests.includes(prev) ? prev : (tests[0] || '')) }, [tests])
+  const row = data.find(d => d.test === t)
+  const pie = React.useMemo(() => {
+    const passed = row ? row.passed : 0
+    const failed = row ? row.failed : 0
+    return [
+      { label: 'Passed', value: passed, color: '#10b981' },
+      { label: 'Failed', value: failed, color: '#ef4444' },
+    ]
+  }, [row])
+  return (
+    <div style={{display:'grid', gap:8}}>
+      <select className="input select" value={t} onChange={e=> setT(e.target.value)}>
+        {tests.map(x=> <option key={x} value={x}>{x}</option>)}
+      </select>
+      <PieChart data={pie} />
     </div>
   )
 }

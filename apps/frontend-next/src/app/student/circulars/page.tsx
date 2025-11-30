@@ -1,5 +1,8 @@
 "use client"
 import React from 'react'
+import Link from 'next/link'
+import type { Route } from 'next'
+import { usePathname } from 'next/navigation'
 import { findStudent, readCircularsByClassSection } from '../../teacher/data'
 
 const BANNER_COLORS = ['blue','green','orange','pink','violet'] as const
@@ -10,7 +13,18 @@ function pickColor(title: string, idx: number): BannerColor {
 }
 
 export default function CircularsPage() {
+  const pathname = usePathname()
   const [items, setItems] = React.useState<Array<any>>([])
+
+  const navLinks: Array<{ href: Route; label: string; icon: string }> = [
+    { href: '/student/dashboard', label: 'Dashboard', icon: '🏠' },
+    { href: '/student/progress', label: 'Progress', icon: '📊' },
+    { href: '/student/attendance', label: 'Attendance', icon: '✅' },
+    { href: '/student/diary', label: 'Digital Diary', icon: '📔' },
+    { href: '/student/calendar', label: 'Calendar', icon: '📅' },
+    { href: '/student/circulars', label: 'Circulars', icon: '📣' },
+    { href: '/student/syllabus', label: 'Academic Syllabus', icon: '📘' }
+  ]
 
   const recompute = React.useCallback(() => {
     try {
@@ -39,15 +53,66 @@ export default function CircularsPage() {
   }, [recompute])
 
   return (
-    <div className="dash">
-      <h2 className="title">Circulars</h2>
-      <p className="subtitle">Latest announcements and notices for your class.</p>
-      <div style={{display:'grid', gap:12, marginTop:12}}>
+    <div className="student-shell">
+      <div className="topbar topbar-student">
+        <div className="topbar-inner">
+          <div className="brand-mark">
+            <span className="dot" />
+            <strong>STUDENT</strong>
+          </div>
+          <nav className="tabs" aria-label="Student quick navigation tabs">
+            {[0, 1, 2].map((i) => (
+              <button
+                key={i}
+                type="button"
+                className="tab"
+                style={{ pointerEvents: 'none', opacity: 0.4 }}
+                aria-hidden="true"
+              >
+                &nbsp;
+              </button>
+            ))}
+          </nav>
+          <div />
+        </div>
+      </div>
+      <div className="dash-wrap student-main">
+        <div className="dash-layout">
+          <aside className="side-nav side-nav-student" aria-label="Student quick navigation">
+            {navLinks.map(link => {
+              const active = pathname?.startsWith(link.href)
+              return (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  className={`side-nav-link ${active ? 'side-nav-link-active' : ''}`}
+                  aria-label={link.label}
+                >
+                  <span className="side-nav-icon">{link.icon}</span>
+                  <span>{link.label.split(' ')[0]}</span>
+                </Link>
+              )
+            })}
+          </aside>
+
+          <div className="dash">
+            <div
+              style={{
+                height: 6,
+                width: 64,
+                borderRadius: 999,
+                background: '#3b2c1a',
+                marginBottom: 10,
+              }}
+            />
+            <h2 className="title">Circulars</h2>
+            <p className="subtitle">Latest announcements and notices for your class.</p>
+            <div style={{display:'grid', gap:12, marginTop:12}}>
         {items.length === 0 && (
           <div className="note">No circulars posted yet.</div>
         )}
         {items.map((c: any, i: number) => {
-          const color: BannerColor = (c && typeof c.color === 'string' && (BANNER_COLORS as readonly string[]).includes(c.color)) ? c.color : pickColor(c.title || '', i)
+          const color: BannerColor = pickColor(c.title || '', i)
           return (
           <div key={i} style={{border:'1px solid var(--panel-border)', borderRadius:12, overflow:'hidden', background:'var(--panel)'}}>
             <div className={`banner-${color}`} style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, padding:'12px 14px', borderBottom:'1px solid var(--panel-border)'}}>
@@ -77,6 +142,9 @@ export default function CircularsPage() {
             )}
           </div>
         )})}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )

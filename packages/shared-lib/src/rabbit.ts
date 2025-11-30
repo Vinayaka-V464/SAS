@@ -10,16 +10,15 @@ export async function connectRabbit(url: string, socketOptions?: Options.Connect
   const conn = await amqp.connect(url, socketOptions);
   const ch = await conn.createChannel();
   logger.info('RabbitMQ connected');
-  cached = { conn, ch };
-  return cached;
+  cached = { conn: conn as unknown as Connection, ch: ch as unknown as Channel };
+  return cached as RabbitConn;
 }
 
 export async function closeRabbit() {
   if (cached) {
     await cached.ch.close();
-    await cached.conn.close();
+    await (cached.conn as any).close();
     cached = null;
     logger.info('RabbitMQ disconnected');
   }
 }
-
